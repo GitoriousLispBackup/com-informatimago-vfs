@@ -672,7 +672,7 @@
 
 
 
-(setf (logical-pathname-translations "LISP") nil
-      (logical-pathname-translations "LISP") (list (list #P"LISP:**;*.*.*" #P"HOME:SRC;LISP;**;*.*.*")
+(setf (logical-pathname-translations "LISP") nil)
+(setf (logical-pathname-translations "LISP") (list (list #P"LISP:**;*.*.*" #P"HOME:SRC;LISP;**;*.*.*")
                                                    (list #P"LISP:**;*.*"   #P"HOME:SRC;LISP;**;*.*")
                                                    (list #P"LISP:**;*"     #P"HOME:SRC;LISP;**;*")))
