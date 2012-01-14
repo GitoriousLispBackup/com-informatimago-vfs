@@ -16,7 +16,7 @@
 ;;;;LEGAL
 ;;;;    GPL
 ;;;;    
-;;;;    Copyright Pascal Bourguignon 2006 - 2006
+;;;;    Copyright Pascal Bourguignon 2006 - 2012
 ;;;;    
 ;;;;    This program is free software; you can redistribute it and/or
 ;;;;    modify it under the terms of the GNU General Public License
@@ -38,6 +38,10 @@
 
 ;; (do-external-symbols (symbol "COMMON-LISP") 
 ;;   (export (intern (string symbol) *package*)))
+
+
+(defvar *maximum-file-size* (* 1024 1024)
+  "Maximum virtual file size.")
 
 
 (defun proper-list-p (object)
@@ -103,6 +107,17 @@ SEPARATOR:  (OR NULL STRINGP CHARACTERP)
 
 
 
+(defun assert-type (datum expected-type)
+  "
+DO:     Signal a TYPE-ERROR if DATUM is not of the EXPECTED-TYPE.
+NOTICE: CHECK-TYPE signals a PROGRAM-ERROR.
+"
+  (or (typep datum expected-type)
+      (error (make-condition 'type-error
+                             :datum datum :expected-type expected-type))))
+
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; regular expressions
 ;;;
@@ -147,7 +162,13 @@ SEPARATOR:  (OR NULL STRINGP CHARACTERP)
 ;;; http://www.lispworks.com/documentation/HyperSpec/Body/19_.htm
 
 (define-condition simple-file-error (file-error simple-error)
-  ())
+  ()
+  (:report (lambda (condition stream)
+             (format stream "~?"
+                     (simple-condition-format-control condition)
+                     (simple-condition-format-arguments condition)))))
+
+
 
 (defparameter *logical-pathname-regexp*
   (let ((host "(([-A-Z0-9]+):)?")
@@ -228,6 +249,9 @@ SEPARATOR:  (OR NULL STRINGP CHARACTERP)
      item)))
 
 
+;;;---------------------------------------------------------------------
+;;; PATHNAME
+;;;---------------------------------------------------------------------
 
 (defclass pathname ()
   ((host      :accessor %pathname-host
@@ -264,7 +288,7 @@ SEPARATOR:  (OR NULL STRINGP CHARACTERP)
                  *print-readably* *print-right-margin*))  
       (format t "~A = ~A~%" s (symbol-value s)))
     (format stream "~:[~;#P\"~]~A:~:[~;;~]~{~A;~}~:[~;~:*~A~]~
-                    ~:[~;.~:*~A~:[~;.~:*~A~]~]~8:*~:[~;\"~]"
+                    ~:[~;.~:*~A~:[~;.~:*~A~]~]~0@*~:[~;\"~]"
             *print-escape*
             (pathname-host self)
             (eq :relative (first (pathname-directory self)))
@@ -275,10 +299,22 @@ SEPARATOR:  (OR NULL STRINGP CHARACTERP)
   self)
 
 
-(defun assert-type (datum expected-type)
-  (or (typep datum expected-type)
-      (error (make-condition 'type-error
-                             :datum datum :expected-type expected-type))))
+(defun print-pathname (pathname)
+  (with-accessors ((host pathname-host)
+                   (device pathname-device)
+                   (directory pathname-directory)
+                   (name pathname-name)
+                   (type pathname-type)
+                   (version pathname-version)) pathname
+    (format t "~A~%~{~10A: ~S~%~}"
+            (class-name (class-of pathname))
+            (list :host host
+                  :device device
+                  :directory directory
+                  :name name
+                  :type type
+                  :version version))))
+
 
 (defmacro define-pathname-attribute (name)
   `(defun ,(intern (format nil "PATHNAME-~A" name))
@@ -349,7 +385,15 @@ file). Implementations can define other special version symbols.
 ;;; http://www.lispworks.com/documentation/HyperSpec/Body/21_.htm
 
 (define-condition simple-stream-error (stream-error simple-error)
-  ())
+  ()
+  (:report (lambda (condition stream)
+             (format stream "~?"
+                     (simple-condition-format-control condition)
+                     (simple-condition-format-arguments condition)))))
+
+;;;---------------------------------------------------------------------
+;;; STREAM
+;;;---------------------------------------------------------------------
 
 (defclass stream ()
   ((open-p          :accessor %open-stream-p
@@ -385,16 +429,18 @@ file). Implementations can define other special version symbols.
                   :initform nil)))
 
 (defclass file-stream (stream)
-  ((pathname :accessor pathname 
-             :initarg :pathname)
-   (file     :accessor %file-stream-file
-             :initarg :file)
-   (contents :accessor %file-stream-contents
-             :initarg :contents)
-   (position :accessor %file-stream-position
-             :initarg :position
-             :initform 0
-             :type    (integer 0))))
+  ((pathname   :accessor pathname 
+               :initarg :pathname)
+   (file       :accessor %file-stream-file
+               :initarg :file)
+   (contents   :accessor %file-stream-contents
+               :initarg :contents)
+   (position   :accessor %file-stream-position
+               :initarg :position
+               :initform 0
+               :type    (integer 0))
+   (override-p :accessor %override-p
+               :initarg  :override-p)))
 
 (defclass file-input-stream (file-stream)
   ())
@@ -470,22 +516,27 @@ file). Implementations can define other special version symbols.
   (assert-type pathspec '(or string file-stream pathname)))
 
 (defmethod pathname ((pathspec pathname))
+  (call-next-method)
   pathspec)
 
 (defmethod pathname ((pathspec string))
+  (call-next-method)
   (destructuring-bind (host relative directory name type version)
       (parse-logical-pathname pathspec)
     ;; (print (list host relative directory name type version))
-    (make-instance 'pathname :host host :directory (cons relative directory)
-                   :name name :type type :version version)))
+    (make-instance  (if (logical-pathname-translations host)
+                        'logical-pathname
+                        'pathname)
+        :host host :directory (cons relative directory)
+        :name name :type type :version version)))
 
 
 (defun install-pathname-reader-macro (&optional (readtable *readtable*))
   (set-dispatch-macro-character #\# #\p
-    (lambda (stream disp char)
-      (declare (ignore disp char))
-      (pathname (read stream t nil t)))
-    readtable))
+                                (lambda (stream disp char)
+                                  (declare (ignore disp char))
+                                  (pathname (read stream t nil t)))
+                                readtable))
 
 
 (defun reset-readtable ()
@@ -501,15 +552,18 @@ file). Implementations can define other special version symbols.
                       (defaults nil defaults-p))
   (cond ((stringp directory)  (setf directory (list :absolute directory)))
         ((eq :wild directory) (setf directory (list :absolute :wild-inferiors))))
-  (make-instance 'pathname
-    :host (check-host (or host (if defaults-p
-                                   (and defaults (pathname-host      defaults))
-                                   (pathname-host *default-pathname-defaults*))))
-    :device      (or device    (and defaults (pathname-device    defaults)))
-    :directory   (or directory (and defaults (pathname-directory defaults)))
-    :name        (or name      (and defaults (pathname-name      defaults)))
-    :type        (or type      (and defaults (pathname-type      defaults)))
-    :version     (or version   (and defaults (pathname-version   defaults)))))
+  (let ((host (check-host (or host (if defaults-p
+                                       (and defaults (pathname-host      defaults))
+                                       (pathname-host *default-pathname-defaults*))))))
+    (make-instance (if (logical-pathname-translations host)
+                       'logical-pathname
+                       'pathname)
+        :host        host
+        :device      (or device    (and defaults (pathname-device    defaults)))
+        :directory   (or directory (and defaults (pathname-directory defaults)))
+        :name        (or name      (and defaults (pathname-name      defaults)))
+        :type        (or type      (and defaults (pathname-type      defaults)))
+        :version     (or version   (and defaults (pathname-version   defaults))))))
 
 
 (defun pathnamep (object) (typep object 'pathname))
@@ -521,7 +575,7 @@ file). Implementations can define other special version symbols.
 
 (defun logical-pathname-translations (host)
   (assert-type host 'string)
-  (gethash host  *logical-pathname-translations*))
+  (gethash host *logical-pathname-translations*))
 
 (defun (setf logical-pathname-translations) (value host)
   (assert-type host 'string)
@@ -551,7 +605,9 @@ file). Implementations can define other special version symbols.
 
 
 (defun logical-pathname (pathspec)
+  (warn "LOGICAL-PATHNAME is not implemented correctly.")
   (pathname pathspec))
+
 
 (defun parse-namestring (thing &optional host
                          (default-pathname *default-pathname-defaults*)
@@ -642,6 +698,7 @@ file). Implementations can define other special version symbols.
 (defun translate-pathname (source from-wildcard to-wildcard &key)
   (error "translate-pathname not implemented yet"))
 
+
 (defun delete-back (dir)
   (loop
      :with changed = t
@@ -654,7 +711,7 @@ file). Implementations can define other special version symbols.
                   (setf (cdr cur) (cdddr cur)
                         changed t)))
      :finally (return dir)))
-           
+
 (defun merge-pathnames (pathname 
                         &optional (default-pathname *default-pathname-defaults*)
                         (default-version :newest))
@@ -695,6 +752,16 @@ file). Implementations can define other special version symbols.
 (deftype pathname-version () '(or file-version
                                (member nil :wild :unspecific :newest)))
 
+(defvar *dump-indent* "    |")
+
+(defgeneric dump (object &OPTIONAL STREAM LEVEL)
+  (:documentation "Dumps the OBJECT to *standard-output*."))
+
+
+;;;---------------------------------------------------------------------
+;;; FS-ITEM
+;;;---------------------------------------------------------------------
+
 (defclass fs-item ()
   ((parent :accessor parent
            :initarg :parent 
@@ -708,6 +775,10 @@ file). Implementations can define other special version symbols.
                  &optional (stream *standard-output*) (level ""))
   (format t "~A--> [ITM] ~S ### CANNOT DUMP SUCH AN ITEM~%" level self))
 
+
+;;;---------------------------------------------------------------------
+;;; FS-DIRECTORY
+;;;---------------------------------------------------------------------
 
 (defclass fs-directory (fs-item)
   ((name            :accessor name
@@ -730,7 +801,7 @@ file). Implementations can define other special version symbols.
   (format t "~A--> [DIR] ~A~%" level (name self))
   (maphash (lambda (k v)
              (declare (ignore k))
-             (dump v stream (concatenate 'string level "   |")))
+             (dump v stream (concatenate 'string level *dump-indent*)))
            (entries self)))
 
 (defmethod select-entries ((self t) predicate) 
@@ -775,7 +846,11 @@ file). Implementations can define other special version symbols.
   (if (entry-named self name)
       (remhash name (entries self))
       (error "No entry named ~S exists in ~S" name self)))
-  
+
+
+;;;---------------------------------------------------------------------
+;;; FS-FILE
+;;;---------------------------------------------------------------------
 
 (defclass fs-file (fs-item)
   ((name            :accessor name
@@ -803,10 +878,14 @@ file). Implementations can define other special version symbols.
 (defmethod dump ((self fs-file)
                  &optional (stream *standard-output*) (level ""))
   (format t "~A--> [FIL] ~A.~A~%" level (name self) (type self))
-  (maphash (lambda (k v)
-             (declare (ignore k))
-             (dump v stream (concatenate 'string level "   |")))
-           (entries self)))
+  (dolist (v (let ((versions '()))
+               (maphash (lambda (k v)
+                          (declare (ignore k))
+                          (push v versions))
+                        (versions self))
+               (sort versions (function <) :key (function version))))
+    (dump v stream (concatenate 'string level *dump-indent*)))
+  self)
 
 (defun pathname-entry-name (path)
   (format nil "~A.~A" (pathname-name path) (pathname-type path)))
@@ -825,8 +904,42 @@ file). Implementations can define other special version symbols.
                (when (funcall predicate v) (push v result))) (versions self))
     result))
 
-(defclass file-contents (fs-item)
-  ((version         :accessor version
+
+(defun purge-file (file)
+  "
+DO: Delete all the versions of the file but the newest.
+"
+  (let ((entry (file-entry file)))
+    (if entry
+        (let* ((file   (file entry))
+               (newest (newest file)))
+          (when newest
+            (let ((newtab (make-hash-table :test (function eql))))
+              (setf (gethash (version newest) newtab) newest
+                    (versions file) newtab))))
+        (error "There's no file ~A" file)))
+  file)
+
+
+(defun delete-version (file)
+  "
+DO: Delete only the specified version.
+"
+  (let ((entry (file-entry file)))
+    (if entry
+        (remove-version (file entry) (version entry))
+        (error "There's no file ~A" file))))
+
+
+;;;---------------------------------------------------------------------
+;;; FILE-CONTENTS
+;;;---------------------------------------------------------------------
+
+(defclass file-contents ()
+  ((file            :accessor file
+                    :initarg :file
+                    :type  fs-file)
+   (version         :accessor version
                     :initarg :version
                     :type     file-version)
    (author          :accessor author
@@ -836,7 +949,7 @@ file). Implementations can define other special version symbols.
    (write-date      :accessor write-date
                     :initarg :write-date
                     :initform (get-universal-time)
-                    :type    (or (null (integer 0))))
+                    :type    (or null (integer 0)))
    (element-type    :accessor element-type
                     :initarg :element-type
                     :initform 'character)
@@ -846,33 +959,48 @@ file). Implementations can define other special version symbols.
   (:documentation "A versionned file contents."))
 
 (defmethod pathname ((self file-contents))
-  (let ((path (pathname (parent self))))
+  (let ((path (pathname (file self))))
     (setf (%pathname-version path) (version self))
     path))
 
 (defmethod dump ((self file-contents)
                  &optional (stream *standard-output*) (level ""))
-  (format t "~A--> [VER] ~A (:AUTHOR ~S :WRITE-DATE ~S :SIZE ~A)~%"
+  (format t "~A--> [VER] ~A ~((:AUTHOR ~S :WRITE-DATE ~S :ELEMENT-TYPE ~S :SIZE ~A)~)~%"
           level (version self) (author self) (write-date self)
+          (element-type self)
           (length (contents self))))
 
 
-(defparameter *author* nil "The name or identification of the user.")
+;;;---------------------------------------------------------------------
+
+
+(defparameter *author*
+  (first (last (cl:pathname-directory (cl:user-homedir-pathname))))
+  "The name or identification of the user.")
+
 
 (defmethod create-new-version ((self fs-file) &key (element-type 'character))
+  "
+DO:     Add a new version to the file.
+RETURN: The FS-FILE.
+"
   (setf (newest self)
         (make-instance 'file-contents
-          :version (1+ (if (null (newest self)) 0 (version (newest self))))
-          :author *author*
-          :write-date (get-universal-time)
-          :element-type element-type
-          :contents (make-array 0 :fill-pointer 0 :adjustable t
-                                :element-type element-type)
-          :parent self))
+            :version (1+ (if (null (newest self)) 0 (version (newest self))))
+            :author *author*
+            :write-date (get-universal-time)
+            :element-type element-type
+            :contents (make-array 0 :fill-pointer 0 :adjustable t
+                                  :element-type element-type)
+            :file self))
   (setf (gethash (version (newest self)) (versions self)) (newest self))
   self)
 
 
+
+;;;---------------------------------------------------------------------
+;;; FILE SYSTEM 
+;;;---------------------------------------------------------------------
 
 (defclass file-system (fs-directory)
   ()
@@ -899,7 +1027,7 @@ file). Implementations can define other special version symbols.
   (make-pathname :host (name *default-file-system*)
                  :directory '(:absolute)
                  :defaults nil))
-                 
+
 
 (defun decompose-pathname (path)
   (format t "~{~&HOST      = ~S~
@@ -921,6 +1049,7 @@ file). Implementations can define other special version symbols.
 (defun resolve-pathspec (pathspec)
   (translate-logical-pathname (pathname pathspec)))
 
+
 (defun directory-entry (pathspec)
   (let* ((fspath (resolve-pathspec pathspec))
          (fs  (if (pathname-host fspath)
@@ -929,6 +1058,7 @@ file). Implementations can define other special version symbols.
     (if fs
         (entry-at-path fs (cdr (pathname-directory fspath)))
         (error "There's no file system named ~S" (pathname-host fspath)))))
+
 
 (defmethod create-directories-at-path ((self fs-directory) path
                                        &optional created)
@@ -944,30 +1074,38 @@ file). Implementations can define other special version symbols.
             (error "~A~A; already exists and is not a directory."
                    (pathname self) (car path))))))
 
-(defun file-entry (pathspec)
-  (let* ((dir      (directory-entry pathspec))
-         (file     (pathname pathspec))
-         (entry    (entry-named dir (pathname-entry-name file))))
-    (if entry
-        (case (pathname-version file)
-          ((nil)      entry)
-          ((:newest)  (newest entry))
-          (otherwise  (gethash (pathname-version file) (versions entry))))
-        (error "There's no file ~A" file))))
 
-(defun create-file-at-path (pathspec &optional (create-version-p t))
-  (let* ((dir      (directory-entry pathspec))
-         (file     (pathname pathspec))
+(defun file-entry (pathspec)
+  "
+RETURN: The FILE-CONTENTS specified by PATHSPEC (if no version is specified, NEWEST is returned).
+"
+  (let* ((file     (pathname pathspec))
+         (dir      (directory-entry file))
+         (entry    (entry-named dir (pathname-entry-name file))))
+    (when entry
+      (case (pathname-version file)
+        ((nil :newest) (newest entry))
+        (otherwise     (gethash (pathname-version file) (versions entry)))))))
+
+
+(defun create-file-at-path (pathspec &key (create-version-p t) (element-type 'character))
+  "
+RETURN: The FS-FILE created.
+NOTE:   If a FS-FILE existed at the given PATHSPEC, then it is returned,
+        a new version being created if CREATE-VERSION-P is true.
+"
+  (let* ((file     (pathname pathspec))
+         (dir      (directory-entry file))
          (entry    (entry-named dir (pathname-entry-name file))))
     (unless entry
       (setf entry (make-instance 'fs-file
-                    :name (pathname-name file) :type (pathname-type file)))
+                      :name (pathname-name file) :type (pathname-type file)))
       (add-entry dir entry))
-    (if (typep entry 'fs-file)
-        (if create-version-p 
-            (create-new-version entry)
-            entry)
-        (error "~A already exist and is not a file" (pathname entry)))))
+    (typecase entry
+      (fs-file (if create-version-p 
+                   (create-new-version entry :element-type element-type)
+                   entry))
+      (t (error "~A already exist and is not a file" (pathname entry))))))
 
 
 
@@ -1034,9 +1172,6 @@ file). Implementations can define other special version symbols.
         (error "Invalid host ~S"  (pathname-host fspath)))))
 
 
-(defun probe-file (pathspec)
-  (values (ignore-errors (pathname (file-entry pathspec)))))
-
 (defun ensure-directories-exist (pathspec &key verbose)
   (let* ((fspath (resolve-pathspec pathspec))
          (fs  (if (pathname-host fspath)
@@ -1049,13 +1184,54 @@ file). Implementations can define other special version symbols.
         (values pathspec (create-directories-at-path fs (cdr dir)))
         (error "There's no file system named ~S" (pathname-host fspath)))))
 
+
 (defun truename (filespec)
-  (let ((path (merge-pathnames filespec (make-pathname :version :newest
-                                                       :defaults filespec))))
-    (or (probe-file path)
-        (error (make-condition 'simple-file-error :pathname path
-                               :format-control "~A: File ~A does not exist"
-                               :format-arguments (list 'truename filespec))))))
+  "
+RETURN:      The truename of the filespec.
+URL:         http://www.lispworks.com/documentation/HyperSpec/Body/f_tn.htm
+COMMON-LISP: truename tries to find the file indicated by filespec and
+             returns its truename.  If the filespec designator is an
+             open stream, its associated file is used.  If filespec is
+             a stream, truename can be used whether the stream is open
+             or closed.  It is permissible for truename to return more
+             specific information after the stream is closed than when
+             the stream was open.  If filespec is a pathname it
+             represents the name used to open the file.  This may be,
+             but is not required to be, the actual name of the file.
+"
+  (let ((filespec (pathname filespec)))
+    (if (wild-pathname-p filespec)
+        (error (make-condition 'simple-file-error
+                               :pathname filespec
+                               :format-control "~A: Filespec ~S is a wild pathname. "
+                               :format-arguments (list 'truename filespec)))
+        (let ((entry (file-entry filespec)))
+          (if entry
+              (pathname entry)
+              (error (make-condition 'simple-file-error
+                                     :pathname filespec
+                                     :format-control "~A: File ~S does not exist. "
+                                     :format-arguments (list 'truename filespec))))))))
+
+
+(defun probe-file (pathspec)
+  "
+RETURN:      the truename of the file or NIL.
+URL:         http://www.lispworks.com/documentation/HyperSpec/Body/f_probe_.htm
+COMMON-LISP: probe-file tests whether a file exists.
+
+             probe-file returns false if there is no file named
+             pathspec, and otherwise returns the truename of
+             pathspec.
+
+             If the pathspec designator is an open stream, then
+             probe-file produces the truename of its associated
+             file. If pathspec is a stream, whether open or closed, it
+             is coerced to a pathname as if by the  function pathname.
+"
+  (values (ignore-errors (truename pathspec))))
+
+
 
 (defun file-author       (path) (author       (file-entry (truename path))))
 (defun file-write-date   (path) (write-date   (file-entry (truename path))))
@@ -1076,11 +1252,11 @@ file). Implementations can define other special version symbols.
   (let ((file (if (ignore-errors (probe-file newpath))
                   (file-at-path newpath)
                   (create-file-at-path newpath nil))))
-    (remove-version (parent self) (version self))
+    (remove-version (file self) (version self))
     (setf (version self) (if (newest file)
                              (max (version self) (1+ (version (newest file))))
                              (version self))
-          (parent self)   file
+          (file self)   file
           (gethash (version self) (versions file)) self)
     self))
 
@@ -1097,10 +1273,10 @@ file). Implementations can define other special version symbols.
           (setf (newest self) maxv)
           ;; otherwise, we've deleted the last version, let's delete the file:
           (delete-entry self)))))
-  
+
 (defmethod delete-entry ((self file-contents))
-  ;; delete the version ( careful with (newest (parent self)) ).
-  (remove-version (parent self) (version self)))
+  ;; delete the version ( careful with (newest (file self)) ).
+  (remove-version (file self) (version self)))
 
 (defun rename-file (filespec new-name)
   (let* ((defaulted (merge-pathnames new-name filespec))
@@ -1127,13 +1303,13 @@ file). Implementations can define other special version symbols.
                 :pathname newpath
                 :format-control "~A: target directory ~A doesn't exist"
                 :format-arguments (list 'rename-file newpath))))
-      (rename-entry (file-entry old-truename) newpath))
+      (rename-entry (file (file-entry old-truename)) newpath))
     (values defaulted old-truename new-truename)))
 
 (defun delete-file (filespec)
-  (delete-entry (file-entry (truename filespec)))
+  (delete-entry (file (file-entry (truename filespec))))
   t)
-    
+
 (defun delete-directory (pathspec)
   (let ((dir (directory-entry pathspec)))
     (when dir
@@ -1153,40 +1329,40 @@ file). Implementations can define other special version symbols.
 
 
 
-#||
-(defun forward-call (function arguments)
-  "&optional &key"
-  (let ((opt  (position '&optional arguments))
-        (rest (position '&rest     arguments))
-        (key  (position '&key      arguments)))
-    (if rest
-        `(apply (function ,function)
-                ,@(subseq arguments 0 (or opt rest))
-                ,@(when opt
-                        (mapcar (lambda (x) (if (listp x) (first x) x)) 
-                                (subseq arguments (1+ opt) rest)))
-                ,(nth (1+ rest) arguments))
-        `(,function
-          ,@(subseq arguments 0 (or opt rest))
-          ,@(when opt
-                  (mapcar (lambda (x) (if (listp x) (first x) x)) 
-                          (subseq arguments (1+ opt) rest)))
-          ,@(when key
-                  (mapcan (lambda (x) 
-                            (if (listp x)
-                                (list (if (listp (first x))
-                                          (first (first x))
-                                          (intern (string (first x)) "KEYWORD"))
-                                      (if (listp (first x))
-                                          (second (first x))
-                                          (first x)))
-                                (list (intern (string x) "KEYWORD")
-                                      x)))
-                          (subseq arguments (1+ key) rest)))))))
-||#
+
+;; (defun forward-call (function arguments)
+;;   "&optional &key"
+;;   (let ((opt  (position '&optional arguments))
+;;         (rest (position '&rest     arguments))
+;;         (key  (position '&key      arguments)))
+;;     (if rest
+;;         `(apply (function ,function)
+;;                 ,@(subseq arguments 0 (or opt rest))
+;;                 ,@(when opt
+;;                         (mapcar (lambda (x) (if (listp x) (first x) x)) 
+;;                                 (subseq arguments (1+ opt) rest)))
+;;                 ,(nth (1+ rest) arguments))
+;;         `(,function
+;;           ,@(subseq arguments 0 (or opt rest))
+;;           ,@(when opt
+;;                   (mapcar (lambda (x) (if (listp x) (first x) x)) 
+;;                           (subseq arguments (1+ opt) rest)))
+;;           ,@(when key
+;;                   (mapcan (lambda (x) 
+;;                             (if (listp x)
+;;                                 (list (if (listp (first x))
+;;                                           (first (first x))
+;;                                           (intern (string (first x)) "KEYWORD"))
+;;                                       (if (listp (first x))
+;;                                           (second (first x))
+;;                                           (first x)))
+;;                                 (list (intern (string x) "KEYWORD")
+;;                                       x)))
+;;                           (subseq arguments (1+ key) rest)))))))
 
 
- 
+
+
 
 ;; (define-forward name arguments
 ;;   [ documentation-string ]
@@ -1207,46 +1383,46 @@ file). Implementations can define other special version symbols.
 
 (eval-when (:execute :compile-toplevel :load-toplevel)
   (defun make-method-lambda-list (lambda-list self-name self-type)
-   (let* ((got-it nil)
-          (mand (mapcar (lambda (par) 
-                          (let ((name (parameter-name par)))
-                            (if (eq name self-name)
-                                (progn (setf got-it t)
-                                       (list name self-type))
-                                (list name 't))))
-                        (lambda-list-mandatory-parameters lambda-list)))
-          (opti (let ((optionals  (lambda-list-optional-parameters lambda-list)))
-                  (cond
-                    ((null optionals) nil)
-                    (got-it (cons '&optional 
-                                  (mapcar (function parameter-specifier)
-                                          optionals)))
-                    (t (let ((pos  (position self-name optionals
-                                             :key (function parameter-name))))
-                         (if pos
-                             (append
-                              (mapcar (lambda (par) (list (parameter-name par) 't))
-                                      (subseq optionals 0 pos))
-                              (list
-                               (list (parameter-name (nth pos optionals))
-                                     self-type))
-                              (when (< (1+ pos) (length optionals))
-                                (cons '&optional 
-                                      (mapcar (function parameter-specifier)
-                                              (subseq optionals (1+ pos))))))
-                             (cons '&optional 
+    (let* ((got-it nil)
+           (mand (mapcar (lambda (par) 
+                           (let ((name (parameter-name par)))
+                             (if (eq name self-name)
+                                 (progn (setf got-it t)
+                                        (list name self-type))
+                                 (list name 't))))
+                         (lambda-list-mandatory-parameters lambda-list)))
+           (opti (let ((optionals  (lambda-list-optional-parameters lambda-list)))
+                   (cond
+                     ((null optionals) nil)
+                     (got-it (cons '&optional 
                                    (mapcar (function parameter-specifier)
-                                           optionals))))))))
-          (keys (mapcar (function parameter-specifier)
-                        (lambda-list-keyword-parameters lambda-list)))
-          (rest (and (lambda-list-rest-p lambda-list)
-                     (mapcar (function parameter-specifier)
-                             (lambda-list-rest-parameter lambda-list)))))
-     (append mand opti
-             (when keys (cons '&key keys))
-             (when rest (list '&rest rest))))))
+                                           optionals)))
+                     (t (let ((pos  (position self-name optionals
+                                              :key (function parameter-name))))
+                          (if pos
+                              (append
+                               (mapcar (lambda (par) (list (parameter-name par) 't))
+                                       (subseq optionals 0 pos))
+                               (list
+                                (list (parameter-name (nth pos optionals))
+                                      self-type))
+                               (when (< (1+ pos) (length optionals))
+                                 (cons '&optional 
+                                       (mapcar (function parameter-specifier)
+                                               (subseq optionals (1+ pos))))))
+                              (cons '&optional 
+                                    (mapcar (function parameter-specifier)
+                                            optionals))))))))
+           (keys (mapcar (function parameter-specifier)
+                         (lambda-list-keyword-parameters lambda-list)))
+           (rest (and (lambda-list-rest-p lambda-list)
+                      (mapcar (function parameter-specifier)
+                              (lambda-list-rest-parameter lambda-list)))))
+      (append mand opti
+              (when keys (cons '&key keys))
+              (when rest (list '&rest rest))))))
 
-            
+
 (defun stream-designator (stream direction)
   "DIRECTION is either *standard-input* or *standard-output*"
   (case stream 
@@ -1258,8 +1434,16 @@ file). Implementations can define other special version symbols.
   (error (make-condition 'type-error :datum object :expected-type type)))
 
 
-(eval-when (:compile-toplevel #| Not necessary?: |# :load-toplevel :execute)
-  (defparameter *stream-methods* (make-hash-table)))
+
+
+
+(eval-when (:compile-toplevel
+            #| Not necessary?: |# :load-toplevel
+                                  :execute)
+  (defparameter *stream-methods* (make-hash-table)
+    "Keep the information about methods defined with DEFINE-FORWARD,
+for use by DEFINE-STREAM-METHODS"))
+
 
 (defun check-open (method stream)
   (unless (%open-stream-p stream)
@@ -1268,7 +1452,12 @@ file). Implementations can define other special version symbols.
                            :format-control "~S on ~S is illegal"
                            :format-arguments (list method stream)))))
 
-(defmacro define-stream-methods (class-name &rest methods)
+(defmacro define-stream-methods (class-name &body methods)
+  "
+DO:     Expands to a bunch of defmethod forms, with the parameter
+        defined with DEFINE-FORWARD, and the body provided in the
+        METHODS clauses.
+"
   `(progn
      ,@(mapcar (lambda (method)
                  (let ((minfo (gethash (first method) *stream-methods*)))
@@ -1285,6 +1474,42 @@ file). Implementations can define other special version symbols.
 
 
 (defmacro define-forward (name arguments &body body)
+  "
+DO:     Specifies the name and parameter list of methods.
+        The BODY contains declarations and method clauses.
+
+        Specific pseudo-declarations are:
+
+        (stream-argument   stream-parameter)
+        (stream-designator (stream-parameter [:input|:output]))
+
+            Specify the stream parameter.  In the case of
+            stream-designator, the stream can be *standard-input* or
+            *standard-output* by default, as indicated by the keyword.
+        
+        (check-stream-type stream-parameter)
+
+            When given, the stream type is checked in the default method.
+            (overriding methods should (call-next-method)).
+
+        (check-open-p      stream-parameter)
+
+            When given, the methods generated by DEFINE-STREAM-METHODS
+            will test for an open stream.
+
+        (cl-forward        booolean)
+
+             When the boolean is true, a method is defined for CL-STREAM
+             that forwards the call to the corresponding CL function.
+
+        The method clauses in the body are of the form:
+
+        (:method class . body)
+
+             For each of these clause, method is defined for the given
+             stream class.
+       
+"
   (let* ((documentation     (extract-documentation body))
          (declarations      (declarations-hash-table (extract-declarations  body)))
          (body              (extract-body          body))
@@ -1305,17 +1530,17 @@ file). Implementations can define other special version symbols.
     `(progn
        (defun ,name ,arguments
          ,@ (when documentation (list documentation))
-         ,@ (when stream-designator
-              `((setf ,stream-name (stream-designator 
-                                    ,stream-name
-                                    ,(if (listp stream-designator)
-                                         (ecase (second stream-designator)
-                                           ((:input)  '*standard-input*)
-                                           ((:output) '*standard-output*))
-                                         '*standard-input*)))))
-         ,(if (lambda-list-rest-p lambda-list)
-              `(apply (function ,m-name) ,@(make-argument-list lambda-list))
-              `(,m-name         ,@(butlast (make-argument-list lambda-list)))))
+            ,@ (when stream-designator
+                 `((setf ,stream-name (stream-designator 
+                                       ,stream-name
+                                       ,(if (listp stream-designator)
+                                            (ecase (second stream-designator)
+                                              ((:input)  '*standard-input*)
+                                              ((:output) '*standard-output*))
+                                            '*standard-input*)))))
+               ,(if (lambda-list-rest-p lambda-list)
+                    `(apply (function ,m-name) ,@(make-argument-list lambda-list))
+                    `(,m-name         ,@(butlast (make-argument-list lambda-list)))))
        ,@ (when cl-forward
             `((defmethod ,m-name 
                   ,(make-method-lambda-list lambda-list stream-name 'cl-stream)
@@ -1328,18 +1553,19 @@ file). Implementations can define other special version symbols.
                       (if (lambda-list-rest-p lambda-list)
                           `(apply (function ,cl-name) ,@arguments)
                           `(,cl-name ,@(butlast arguments)))))))
-       ,@ (when check-stream-type
-            `((defmethod ,m-name ,(make-method-lambda-list lambda-list stream-name 't)
-                (raise-type-error ,stream-name ',check-stream-type))))
-       ,@ (mapcar
-           (lambda (method)
-             (when (and (listp method) (eq :method (car method)))
-               (destructuring-bind (method class-name &body body) method
-                 (declare (ignore method))
-                 `(defmethod ,m-name
-                      ,(make-method-lambda-list lambda-list stream-name class-name)
-                    ,@body))))
-           body))))
+          ,@ (when check-stream-type
+               `((defmethod ,m-name ,(make-method-lambda-list lambda-list stream-name 't)
+                   (raise-type-error ,stream-name ',check-stream-type))))
+             ,@ (mapcar
+                 (lambda (method)
+                   (when (and (listp method) (eq :method (car method)))
+                     (destructuring-bind (method class-name &body body) method
+                       (declare (ignore method))
+                       `(defmethod ,m-name
+                            ,(make-method-lambda-list lambda-list stream-name class-name)
+                          ,@body))))
+                 body))))
+
 
 
 (define-forward input-stream-p       (stream) 
@@ -1386,8 +1612,6 @@ file). Implementations can define other special version symbols.
           (progn 
             (write-byte byte  (%echo-stream-output-stream stream))
             byte))))
-  (:method file-stream
-    )
   (:method string-input-stream
     (if (< (%string-stream-index stream)
            (or (%string-stream-end stream) 
@@ -1412,8 +1636,6 @@ file). Implementations can define other special version symbols.
     byte)
   (:method echo-stream
     (write-byte byte  (%echo-stream-output-stream stream)))
-  (:method file-stream
-    )
   (:method string-output-stream
     (vector-push-extend (char-code byte) (%string-stream-output-string stream))
     byte)
@@ -1441,8 +1663,6 @@ file). Implementations can define other special version symbols.
           (progn 
             (write-char char (%echo-stream-output-stream stream))
             char))))
-  (:method file-stream
-    )
   (:method string-input-stream
     (if (< (%string-stream-index stream)
            (or (%string-stream-end stream) 
@@ -1465,17 +1685,21 @@ file). Implementations can define other special version symbols.
   (declare (stream-designator (input-stream :input))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward terpri (&optional (output-stream *standard-output*))
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward fresh-line (&optional (output-stream *standard-output*))
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward unread-char (character &optional (input-stream *standard-input*))
   (declare (stream-designator (input-stream :input))
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward write-char (character
                             &optional (output-stream *standard-output*))
@@ -1483,8 +1707,6 @@ file). Implementations can define other special version symbols.
            (cl-forward t) (check-open-p t))
   (:method echo-stream
     (write-char character (%echo-stream-output-stream stream)))
-  (:method file-stream
-    )
   (:method string-output-stream
     (vector-push-extend character (%string-stream-output-string stream))
     character)
@@ -1493,11 +1715,13 @@ file). Implementations can define other special version symbols.
   (:method two-way-stream
     (write-char (%two-way-stream-output-stream stream))))
 
+
 (define-forward read-line (&optional (input-stream *standard-input*)
                                      (eof-error-p t) (eof-value nil)
                                      (recursive-p nil))
   (declare (stream-designator (input-stream :input))
            (cl-forward t) (check-open-p t)))
+
   
 (define-forward write-string (string
                               &optional (output-stream *standard-output*)
@@ -1505,19 +1729,23 @@ file). Implementations can define other special version symbols.
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward write-line (string
                             &optional (output-stream *standard-output*)
                             &key (start 0) (end nil))
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward read-sequence (sequence stream &key (start 0) (end nil))
   (declare (stream-argument stream)
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward write-sequence (sequence stream &key (start 0) (end nil))
   (declare (stream-argument stream)
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward file-length (stream)
   (declare (stream-argument stream)
@@ -1525,10 +1753,12 @@ file). Implementations can define other special version symbols.
            (cl-forward t))
   (:method stream (error "not implemented yet")))
 
+
 (define-forward file-position (stream 
                                &optional (position-spec nil position-spec-p))
   (declare (stream-argument stream)
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward file-string-length (stream object)
   (declare (stream-argument stream)
@@ -1536,124 +1766,377 @@ file). Implementations can define other special version symbols.
            (cl-forward t) (check-open-p t)))
 
 
-
-(defun open (filespec &key (direction :input)
-             (element-type 'character)
-             (if-exists nil if-exists-p)
-             (if-does-not-exist nil if-does-not-exist-p)
-             (external-format :default))
-  (error "Not implemented yet")
-  (ecase direction 
-    ((:probe) )
-    ((:input) )
-    ((:io) )
-    ((:output) ))
-
-  ;; filespec  ¬N.T     ¬N.T.3<NEWEST ¬N.T.3>NEWEST  N.T.3=NEWEST  N.T.3<NEWEST
-  ;;   N.T     no exist     newest        newest       newest         newest
-  ;;   N.T.3   no exist     no exist      no exist     newest      old version
-  ;;                     create newest  create newest
-  :input :probe
-  (ecase if-does-not-exist
-    ((:error)             (error "..."))
-    ((:create)            (create-new-version newest))
-    ((nil)                (return-from open nil)))
-
-  :output :io
-  (ecase if-exists
-    ((:error)             (error "..."))
-    ((:new-version)       (create-new-version "..."))
-    ((:rename)            (rename-file "..." "N.TYPE-OLD-###")
-     (create-file-at-path "..."))
-    ((:rename-and-delete) (rename-file "..." "N.TYPE-OLD-###")
-     (create-file-at-path "...")
-     (delete-file "N.TYPE-OLD-###"))
-    ((:overwrite)         (if newest
-                              (file-entry "...")
-                              (copy-new-version "...")))
-    ((:append)            (if newest
-                              (file-entry "...")
-                              (copy-new-version "...")))
-    ((:supersede)         (create-new-version "..."))
-    ((nil)                (return-from open nil)))
-
-
-  :element-type :external-format
-  if new file then
-  set element-type
-  if file already existed then 
-  check element-type match
-  :default ==> get element-type
-
-  (make-instance 'file-stream
-    :open-p  (and (not (eq direction :probe)) |_...|)
-    :element-type element-type
-    :external-format
-    #+clisp (if (eq external-format :default)
-                                 custom:*default-file-encoding*
-                                 external-format)
-    #-clisp external-format
-    :input-p  (member direction '(:input :io))
-    :output-p (member direction '(:output :io))
-    :pathname filespec                  ; or (pathname filespec) ?
-    :file (file-entry (truename filespec))))
-
 (define-forward stream-external-format (stream)
   (declare (stream-argument stream)
            (check-stream-type stream) 
            (cl-forward t)))
+
 
 (define-forward close (stream &key (abort nil))
   (declare (stream-argument stream)
            (check-stream-type stream) 
            (cl-forward t)))
 
+
 (define-forward listen (&optional input-stream)
   (declare (stream-designator input-stream)
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward clear-input (&optional input-stream)
   (declare (stream-designator (input-stream :input))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward clear-output (&optional output-stream)
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
 
+
 (define-forward force-output (&optional output-stream)
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
+
 
 (define-forward finish-output (&optional output-stream)
   (declare (stream-designator (output-stream :output))
            (cl-forward t) (check-open-p t)))
 
 
-(defun y-or-n-p (&optional format-string &rest args)
-  (when format-string
-    (fresh-line *query-io*)
-    (apply (function format) *query-io* format-string args)
-    (write-string " (y/n) " *query-io*))
-  (loop
-     (let ((line (string-left-trim " " (read-line *query-io*))))
-       (when (plusp (length line))
-         (let ((first-char (char-upcase (char line 0))))
-           (when (char-equal first-char #\n) (return nil))
-           (when (char-equal first-char #\y) (return t))))
-       (write-string "Please answer with y or n : " *query-io*))))
 
 
-(defun yes-or-no-p (&optional format-string &rest args)
-  (when format-string
-    (fresh-line *query-io*)
-    (apply (function format) *query-io* format-string args)
-    (write-string " (yes/no) " *query-io*))
-  (loop
-     (clear-input *query-io*)
-     (let ((line (string-trim " " (read-line *query-io*))))
-       (when (string-equal line "NO")  (return nil))
-       (when (string-equal line "YES") (return t)))
-     (write-string "Please answer with yes or no : " *query-io*)))
+
+
+
+
+(defun open (filespec &key (direction :input)
+             (element-type 'character)
+             (if-exists nil)
+             (if-does-not-exist nil)
+             (external-format :default))
+  
+  (check-type direction (member :input :output :io :probe))
+  (check-type if-exists (member :error :new-version :rename :rename-and-delete
+                                :overwrite :append :supersede nil))
+  (check-type if-does-not-exist (member :error :create nil))
+  (check-type external-format (member :default))
+  
+  ;; (error "Not implemented yet")
+
+  (let ((path (pathname filespec)))
+    (labels ((make-stream (file openp inputp outputp overridep position)
+               (let* ((contents (newest file)))
+                 (make-instance (if inputp
+                                    (if outputp
+                                        'file-io-stream
+                                        'file-input-stream)
+                                    (if outputp
+                                        'file-output-stream
+                                        'file-stream))
+                     :open-p openp
+                     :element-type (element-type contents)
+                     :external-format :default ; ???
+                     :input-p inputp
+                     :output-p outputp
+                     :override-p overridep
+                     :pathname (truename path)
+                     :file file
+                     :contents contents
+                     :position (ecase position
+                                 (:start 0)
+                                 (:end   (length (contents contents)))))))
+
+             (new-file (path element-type)
+               (create-file-at-path path :create-version-p t :element-type element-type))
+
+             (new-file/unlinked (path element-type)
+               (let ((entry (make-instance 'fs-file
+                                :name (pathname-name path) :type (pathname-type path))))
+                 (create-new-version entry :element-type element-type)
+                 entry))
+
+             (new-version (file element-type)
+               (create-new-version file :element-type element-type))
+
+             (copy-new-version (contents)
+               (let ((new-contents (newest (create-new-version (file contents)
+                                                               :element-type (element-type contents)))))
+                 (setf (contents new-contents) (copy-array (contents contents)
+                                                           :copy-fill-pointer t
+                                                           :copy-adjustable t))
+                 (file new-contents)))
+
+             (rename-old (file &optional (index 0))
+               (let ((old (make-pathname :type (format nil "~A-OLD-~3,'0D"
+                                                       (pathname-type file)
+                                                       (incf index))
+                                         :defaults file)))
+                 (if (file-entry old)
+                     (rename-old file index)
+                     (rename-file file old)))))
+      
+      (let ((contents (file-entry path)))
+      
+       ;; filespec  ¬N.T     ¬N.T.3<NEWEST ¬N.T.3>NEWEST  N.T.3=NEWEST  N.T.3<NEWEST
+       ;;   N.T     no exist     newest        newest       newest         newest
+       ;;   N.T.3   no exist     no exist      no exist     newest      old version
+       ;;                     create newest  create newest
+       (ecase direction
+        
+         ((:input :probe)
+          (if contents
+              (progn
+                ;; TODO: use CERROR to ignre the requested element-type
+                (assert (equal (element-type contents) element-type)
+                        () "~A: the element-type requested ~S must be identical to the element-type ~S of the file ~S"
+                        'open element-type (element-type contents)  path)
+                (make-stream (file contents) (eql direction :input) t nil  nil :start))
+              (ecase if-does-not-exist
+                ((:error)
+                 (error (make-condition
+                         'simple-file-error
+                         :pathname path
+                         :format-control "~A: file ~S does not exist"
+                         :format-arguments (list 'open path))))
+                ((:create)
+                 (make-stream (new-file path element-type) (eql direction :input) t nil  nil :start))
+                ((nil)
+                 (return-from open nil)))))
+
+
+         ((:output :io)
+          (if contents
+              ;; file exists:
+              (ecase if-exists
+                ((:error)
+                 (error (make-condition
+                         'simple-file-error
+                         :pathname path
+                         :format-control "~A: file ~S already exists"
+                         :format-arguments (list 'open path))))
+                ((:new-version)
+                 (make-stream (new-version (file contents) element-type)
+                              t (eql direction :io) t  nil :start))
+                ((:rename)
+                 (rename-old path)
+                 (make-stream (new-file path element-type)
+                              t (eql direction :io) t  nil :start))
+                ((:rename-and-delete)
+                 (let ((old nil))
+                   (unwind-protect
+                        (progn
+                          (setf old (rename-old path))
+                          (make-stream (new-file path element-type)
+                                       t (eql direction :io) t  nil :start))
+                     (when old
+                       (delete-file old)))))
+                ((:overwrite)
+                 (make-stream (if (eql contents (newest (file contents)))
+                                  (file contents)
+                                  (copy-new-version contents))
+                              t (eql direction :io) t nil :start))
+                ((:append)
+                 (make-stream (if (eql contents (newest (file contents)))
+                                  (file contents)
+                                  (copy-new-version contents))
+                              t (eql direction :io) t nil :end))
+                ((:supersede)
+                 (make-stream (new-file/unlinked path element-type)
+                              t (eql direction :io) t  nil :start))
+                ((nil)
+                 (return-from open nil)))
+              ;; file does not exist:
+              (ecase if-does-not-exist
+                ((:error)
+                 (error (make-condition
+                         'simple-file-error
+                         :pathname path
+                         :format-control "~A: file ~S does not exist"
+                         :format-arguments (list 'open path))))
+                ((:create)
+                 (make-stream (new-file path element-type) t (eql direction :io) t  t :start))
+                ((nil)
+                 (return-from open nil))))))))))
+
+
+(define-stream-methods file-stream
+    (stream-external-format (%stream-external-format stream))
+  (file-length   (length (contents (%file-stream-contents stream))))
+  (file-string-length
+   (etypecase object
+     (character 1)
+     (string    (length object))))
+  (close
+   (prog1 (%open-stream-p stream)
+     (when (%open-stream-p stream)
+       (setf (%open-stream-p stream) nil)
+       (when (%override-p stream)
+         (let* ((path (pathname stream))
+                (dir   (directory-entry path)))
+           (delete-file path)
+           (add-entry dir (%file-stream-file stream))))))))
+
+
+
+(defun  !read-element (stream eof-error-p eof-value)
+  (with-accessors ((contents %file-stream-contents)
+                   (position %file-stream-position)) stream
+    (if (< position (length (contents contents)))
+        (aref (contents contents) (prog1 position (incf position)))
+        (if eof-error-p
+            (error 'end-of-file :stream stream)
+            eof-value))))
+
+
+(defun !write-element (stream sequence start end)
+  (with-accessors ((contents %file-stream-contents)
+                   (position %file-stream-position)) stream
+    (let* ((end          (or end (length sequence)))
+           (size         (- end start))
+           (new-position (+ position size))
+           (data         (contents contents)))
+      (if (< new-position *maximum-file-size*)
+          (progn
+            (unless (< new-position (array-dimension data 0))
+              (setf data (adjust-array data
+                                       (max new-position (* 2 (array-dimension data 0)))
+                                       :element-type (array-element-type data)
+                                       :initial-element (if (subtypep (array-element-type data)
+                                                                      'character)
+                                                            #\space
+                                                            0)
+                                       :fill-pointer (fill-pointer data))
+                    (contents contents) data))
+            (when (< (fill-pointer data) new-position)
+              (setf (fill-pointer data) new-position))
+            (replace data sequence :start1 position :start2 start :end2 end)
+            (setf position new-position))
+          (error 'simple-stream-error
+                     :stream stream
+                     :format-control "data too big to be written on stream ~S (~A+~A=~A>~A)"
+                     :format-arguments (list stream
+                                             position size new-position *maximum-file-size*))))))
+
+(defun whitespacep (ch)
+  (position  ch #(#\Space #\Newline #\Tab #\Linefeed #\Page #\Return)))
+
+
+(define-stream-methods file-input-stream
+    (file-position
+     (call-next-method)
+     (with-accessors ((contents %file-stream-contents)
+                      (position %file-stream-position)) stream
+       (if position-spec
+           (if (< -1 position-spec (length (contents contents)))
+               (setf position position-spec)
+               (error 'simple-stream-error
+                      :stream stream
+                      :format-control "~A: invalid position ~A on stream ~S"
+                      :format-arguments (list 'file-position position-spec stream))))
+       position))
+
+  (read-byte         (!read-element       stream eof-error-p eof-value))
+  (read-char         (!read-element input-stream eof-error-p eof-value))
+  (read-char-no-hang (!read-element input-stream eof-error-p eof-value))
+  (peek-char
+   (flet ((eof ()
+            (if eof-error-p
+                (error 'end-of-file :stream stream)
+                eof-value)))
+     (with-accessors ((contents %file-stream-contents)
+                      (position %file-stream-position)) stream
+       (case peek-type
+         ((nil))
+         ((t)
+          (setf position (or (position-if-not (function whitespacep)
+                                              (contents contents)
+                                              :start position)
+                             (length (contents contents)))))
+         (otherwise
+          (setf position (or (position peek-type
+                                       (contents contents)
+                                       :start position)
+                             (length (contents contents))))))
+       (if (< position (length (contents contents)))
+           (aref (contents contents) position)
+           (eof)))))
+  (unread-char
+   (with-accessors ((contents %file-stream-contents)
+                    (position %file-stream-position)) input-stream
+     (when (plusp position)
+       (decf position))))
+  (read-line
+   (with-accessors ((contents %file-stream-contents)
+                    (position %file-stream-position)) input-stream
+     (let ((start position)
+           (end   (or (position #\newline (contents contents) :start position)
+                      (length (contents contents)))))
+       (prog1 (subseq (contents contents) start (if (< end (length (contents contents)))
+                                                    (1- end)
+                                                    end))
+         (setf position end)))))
+  (read-sequence
+   (with-accessors ((contents %file-stream-contents)
+                    (position %file-stream-position)) stream
+     (let ((start position)
+           (end   (or (position #\newline (contents contents) :start position)
+                      (length (contents contents)))))
+       (prog1 (subseq (contents contents) start (if (< end (length (contents contents)))
+                                                    (1- end)
+                                                    end))
+         (setf position end)))))
+  (listen
+   (with-accessors ((contents %file-stream-contents)
+                    (position %file-stream-position)) input-stream
+     (< position (length (contents contents)))))
+  (clear-input
+   #|nothing|#
+   nil))
+
+
+(defvar *newline* (string #\newline))
+
+(define-stream-methods file-output-stream
+    (file-position
+     (call-next-method)
+     (with-accessors ((contents %file-stream-contents)
+                      (position %file-stream-position)) stream
+       (if position-spec
+           (if (< -1 position-spec *maximum-file-size*)
+               (setf position position-spec)    
+               (error 'simple-stream-error
+                      :stream stream
+                      :format-control "~A: invalid position ~A on stream ~S"
+                      :format-arguments (list 'file-position position-spec stream))))
+       position))
+  
+  (write-byte     (!write-element stream        (vector byte)      0 1)
+                  byte)
+  (write-char     (!write-element output-stream (string character) 0 1)
+                  character)
+  (terpri         (!write-element output-stream *newline*          0 (length *newline*))
+                  nil)
+  (fresh-line     (with-accessors ((contents %file-stream-contents)
+                                   (position %file-stream-position)) stream
+                    (unless (and (plusp position)
+                                 (char= #\newline (aref (contents contents) (1- position))))
+                      (!write-element output-stream *newline*  0 (length *newline*))
+                      #\newline)))
+  (write-string   (!write-element output-stream string start end)
+                  string)
+  (write-line     (!write-element output-stream string start end)
+                  (!write-element output-stream *newline* 0 (length *newline*))
+                  string)
+  (write-sequence (!write-element stream sequence start end)
+                  sequence)
+  (clear-output   #|nothing|# nil)
+  (force-output   #|nothing|# nil)
+  (finish-output  #|nothing|# nil))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
 
 
 (defun make-synonym-stream (symbol)
@@ -1663,6 +2146,14 @@ file). Implementations can define other special version symbols.
 (define-forward synonym-stream-symbol (synonym-stream)
   (declare (stream-argument synonym-stream)
            (check-stream-type synonym-stream)))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
+
 
 (defun make-broadcast-stream (&rest streams)
   (dolist (stream streams)
@@ -1685,52 +2176,62 @@ file). Implementations can define other special version symbols.
               (values-list results))
        (setf results (multiple-value-list (progn ,@body))))))
 
+
+
 (define-stream-methods broadcast-stream
-    (write-byte     (do-broadcast (ostream stream)
-                      (write-char byte ostream))
-                    byte)
-  (write-char     (do-broadcast (ostream stream)
-                    (write-char character ostream))
-                  character)
-  (terpri         (do-broadcast (ostream stream) 
-                    (terpri ostream))
-                  nil)
-  (fresh-line     (do-broadcast (ostream stream) 
-                    (fresh-line ostream)))
-  (write-string   (do-broadcast (ostream stream) 
-                    (write-string string ostream :start start :end end))
-                  string)
-  (write-line     (do-broadcast (ostream stream) 
-                    (write-line string ostream :start start :end end))
-                  string)
-  (write-sequence (do-broadcast (ostream stream) 
-                    (write-sequence sequence ostream :start start :end end))
-                  sequence)
-  (clear-output   (do-broadcast (ostream stream) 
-                    (clear-output ostream)))
-  (force-output   (do-broadcast (ostream stream) 
-                    (force-output ostream)))
-  (finish-output  (do-broadcast (ostream stream) 
-                    (finish-output ostream)))
+    (write-byte              (do-broadcast (ostream stream)
+                               (write-char byte ostream))
+                             byte)
+  (write-char              (do-broadcast (ostream stream)
+                             (write-char character ostream))
+                           character)
+  (terpri                  (do-broadcast (ostream stream) 
+                             (terpri ostream))
+                           nil)
+  (fresh-line              (do-broadcast (ostream stream) 
+                             (fresh-line ostream)))
+  (write-string            (do-broadcast (ostream stream) 
+                             (write-string string ostream :start start :end end))
+                           string)
+  (write-line              (do-broadcast (ostream stream) 
+                             (write-line string ostream :start start :end end))
+                           string)
+  (write-sequence          (do-broadcast (ostream stream) 
+                             (write-sequence sequence ostream :start start :end end))
+                           sequence)
+  (clear-output            (do-broadcast (ostream stream) 
+                             (clear-output ostream)))
+  (force-output            (do-broadcast (ostream stream) 
+                             (force-output ostream)))
+  (finish-output           (do-broadcast (ostream stream) 
+                             (finish-output ostream)))
   (file-length             (if (%broadcast-stream-streams stream)
                                (file-length 
-                                (car (last (%broadcast-stream-streams stream))))
+                                (first (last (%broadcast-stream-streams stream))))
                                0))
   (file-position           (if (%broadcast-stream-streams stream)
                                (file-position
-                                (car (last (%broadcast-stream-streams stream))))
+                                (first (last (%broadcast-stream-streams stream))))
                                0))
   (file-string-length      (if (%broadcast-stream-streams stream)
                                (file-string-length
-                                (car (last (%broadcast-stream-streams stream))))
+                                (first (last (%broadcast-stream-streams stream))))
                                1))
   (stream-external-format  (if (%broadcast-stream-streams stream)
                                (stream-external-format
                                 (car (last (%broadcast-stream-streams stream))))
                                't))
-  (close             (prog1 (%open-p stream)
-                       (setf (%open-p stream) nil
-                             (%broadcast-stream-streams stream) nil))))
+  (close                   (prog1 (%open-stream-p stream)
+                             (setf (%open-stream-p stream) nil
+                                   (%broadcast-stream-streams stream) nil))))
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
+
 
 
 (defun make-two-way-stream (input-stream output-stream)
@@ -1758,6 +2259,14 @@ file). Implementations can define other special version symbols.
   (declare (stream-argument two-way-stream)
            (check-stream-type two-way-stream)))
 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
+
+
 (defun make-echo-stream (input-stream output-stream)
   (unless (input-stream-p stream)
     (error (make-condition
@@ -1784,7 +2293,7 @@ file). Implementations can define other special version symbols.
            (check-stream-type echo-stream)))
 
 (define-stream-methods echo-stream
-    (read-byte)
+  (read-byte)
   (read-char)
   (read-char-no-hang)
   (peek-char)
@@ -1809,6 +2318,13 @@ file). Implementations can define other special version symbols.
   (file-string-length)
   (stream-external-format)
   (close))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
+
 
 (defun make-concatenated-stream (&rest input-streams)
   (dolist (stream streams)
@@ -1844,6 +2360,7 @@ file). Implementations can define other special version symbols.
                (values (concatenate 'string (first element) line)
                        missing-newline-p)))
             (t (values-list element)))))))
+
 
 (define-stream-methods concatenated-stream
     (read-byte         (!concatenated-read-element 
@@ -1894,74 +2411,17 @@ file). Implementations can define other special version symbols.
          (stream-external-format current)
          :default)))
   (close
-   (prog1 (%open-p stream)
-     (setf (%open-p stream) nil
+   (prog1 (%open-stream-p stream)
+     (setf (%open-stream-p stream) nil
            (%concatenated-stream-streams stream) nil))))
 
-#||
-(define-stream-methods input-stream
-    (read-byte)
-  (read-char)
-  (read-char-no-hang)
-  (peek-char)
-  (unread-char)
-  (read-line)
-  (read-sequence)
-  (listen)
-  (clear-input)
 
-  (file-length)
-  (file-position)
-  (file-string-length)
-  (stream-external-format)
-  (close))
 
-(define-stream-methods output-stream
-    (write-byte)
-  (write-char)
-  (terpri)
-  (fresh-line)
-  (write-string)
-  (write-line)
-  (write-sequence)
-  (listen)
-  (clear-output)
-  (force-output)
-  (finish-output)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
 
-  (file-length)
-  (file-position)
-  (file-string-length)
-  (stream-external-format)
-  (close))
-
-(define-stream-methods io-stream
-    (read-byte)
-  (read-char)
-  (read-char-no-hang)
-  (peek-char)
-  (unread-char)
-  (read-line)
-  (read-sequence)
-  (terpri)
-  (fresh-line)
-  (write-byte)
-  (write-char)
-  (write-string)
-  (write-line)
-  (write-sequence)
-  (listen)
-  (clear-input)
-  (clear-output)
-  (force-output)
-  (finish-output)
-
-  (file-length)
-  (file-position)
-  (file-string-length)
-  (stream-external-format)
-  (close))
-||#
 
 (defun make-string-input-stream (string &optional (start 0) (end nil))
   (make-instance 'string-input-stream
@@ -1981,7 +2441,44 @@ file). Implementations can define other special version symbols.
     (%string-stream-output-string string-output-stream)))
 
 
-;; Macros are taken from clisp sources, and adpated.
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;;
+;;;
+
+(defun y-or-n-p (&optional format-string &rest args)
+  (when format-string
+    (fresh-line *query-io*)
+    (apply (function format) *query-io* format-string args)
+    (write-string " (y/n) " *query-io*))
+  (loop
+     (let ((line (string-left-trim " " (read-line *query-io*))))
+       (when (plusp (length line))
+         (let ((first-char (char-upcase (char line 0))))
+           (when (char-equal first-char #\n) (return nil))
+           (when (char-equal first-char #\y) (return t))))
+       (write-string "Please answer with y or n : " *query-io*))))
+
+
+(defun yes-or-no-p (&optional format-string &rest args)
+  (when format-string
+    (fresh-line *query-io*)
+    (apply (function format) *query-io* format-string args)
+    (write-string " (yes/no) " *query-io*))
+  (loop
+     (clear-input *query-io*)
+     (let ((line (string-trim " " (read-line *query-io*))))
+       (when (string-equal line "NO")  (return nil))
+       (when (string-equal line "YES") (return t)))
+     (write-string "Please answer with yes or no : " *query-io*)))
+
+
+
+
+
+;; Macros are taken from clisp sources, and adapted.
 (eval-when (:execute :compile-toplevel :load-toplevel)
  (defun parse-body (body)
    (values (extract-body body) 
@@ -1991,6 +2488,7 @@ file). Implementations can define other special version symbols.
                 (setf decls (nconc (mapcar (lambda (d) (cons k v)) v) decls)))
               (declarations-hash-table (extract-declarations body)))
              decls))))
+
  
 (defmacro with-open-file ((stream &rest options) &body body)
   (multiple-value-bind (body-rest declarations)  (parse-body body)
@@ -2001,6 +2499,7 @@ file). Implementations can define other special version symbols.
               (when ,stream (close ,stream)))
          (when ,stream (close ,stream :abort t))))))
 
+
 (defmacro with-open-stream ((var stream) &body body)
   (multiple-value-bind (body-rest declarations) (parse-body body)
     `(let ((,var ,stream))
@@ -2008,6 +2507,7 @@ file). Implementations can define other special version symbols.
        (unwind-protect
             (multiple-value-prog1 (progn ,@body-rest) (close ,var))
          (close ,var :abort t)))))
+
 
 (defmacro with-input-from-string ((var string  &key (index nil sindex) 
                                        (start '0 sstart) (end 'nil send))
@@ -2023,6 +2523,7 @@ file). Implementations can define other special version symbols.
             (progn ,@body-rest)
          ,@(when sindex `((setf ,index (%string-stream-index ,var))))
          (close ,var)))))
+
 
 (defmacro with-output-to-string ((var &optional (string nil)
                                       &key (element-type ''character))
@@ -2041,6 +2542,7 @@ file). Implementations can define other special version symbols.
            (unwind-protect
                 (progn ,@body-rest (get-output-stream-string ,var))
              (close ,var))))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -606,3 +606,73 @@
 (dotimes (i 3) (create-file-at-path "HOME:A;3-TOTO.TXT"))
 (dotimes (i 4) (create-file-at-path "HOME:A;4-TOTO.TXT"))
 
+
+(in-package "VFS-USER")
+(INSTALL-PATHNAME-READER-MACRO)
+
+(progn 
+  (vfs::create-file-at-path #P"HOME:TEST.TEXT")
+  (vfs::create-file-at-path #P"HOME:EXAMPLE.TEXT")
+  (vfs::create-new-version (vfs::file (vfs::file-entry #P"HOME:EXAMPLE.TEXT")))
+  (vfs::dump (vfs::file-system-named "HOME")))
+
+(let ((path #P"HOME:TEST.TEXT")
+      (path #P"HOME:EXAMPLE.TEXT"))
+ (defparameter *s* (open path :direction :output :if-exists :new-version
+                         :element-type 'base-char))
+ (write-char   #\* *s*)
+ (print (file-length *s*))
+ (write-string " Hello World" *s*)
+ (print (file-length *s*))
+ (write-line   "! How do you do?" *s*)
+ (print (file-length *s*))
+ (close *s*)
+ (terpri)
+ (finish-output)
+ (vfs::dump (vfs::file-system-named "HOME")))
+
+
+(let ((path #P"HOME:EXAMPLE.DATA"))
+ (defparameter *s* (open path
+                         :direction :output
+                         :element-type '(unsigned-byte 21)
+                         :if-exists :new-version
+                         :if-does-not-exist :create))
+ (write-byte   (char-code #\*) *s*)
+ (print (file-length *s*))
+ (write-sequence (map 'vector 'char-code " Hello World") *s*)
+ (print (file-length *s*))
+ (write-sequence (map 'vector 'char-code "! How do you do?")  *s*)
+ (write-byte (char-code #\newline) *s*)
+ (print (file-length *s*))
+ (close *s*)
+ (terpri)
+ (finish-output)
+ (vfs::dump (vfs::file-system-named "HOME")))
+
+
+(untrace replace)
+(untrace vfs::!write-element replace)
+
+
+(progn
+  (defparameter *s* (open "HOME:EXAMPLE.TEXT" :direction :input))
+  (prog1 (read-line *s*)
+    (close *s*)
+    (vfs::dump (vfs::file-system-named "HOME"))))
+
+(progn
+  (defparameter *s* (open "HOME:EXAMPLE.DATA" :direction :input
+                          :element-type '(unsigned-byte 21)))
+  (prog1 (read-sequence (make-array (file-length *s*)
+                                    :element-type '(unsigned-byte 21))
+                        *s*)
+    (close *s*)
+    (vfs::dump (vfs::file-system-named "HOME"))))
+
+
+
+(setf (logical-pathname-translations "LISP") nil
+      (logical-pathname-translations "LISP") (list (list #P"LISP:**;*.*.*" #P"HOME:SRC;LISP;**;*.*.*")
+                                                   (list #P"LISP:**;*.*"   #P"HOME:SRC;LISP;**;*.*")
+                                                   (list #P"LISP:**;*"     #P"HOME:SRC;LISP;**;*")))
