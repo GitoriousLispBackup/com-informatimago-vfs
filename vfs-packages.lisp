@@ -34,6 +34,8 @@
 ;;;;    Boston, MA 02111-1307 USA
 ;;;;**************************************************************************
 
+(in-package "COMMON-LISP-USER")
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defparameter *redefined-symbols*
     '(  
@@ -95,7 +97,6 @@
   (:shadowing-import-from
    "COM.INFORMATIMAGO.COMMON-LISP.VIRTUAL-FILE-SYSTEM"
    . #.*redefined-symbols*))
-
 
 
 ;;;; THE END ;;;;

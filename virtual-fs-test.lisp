@@ -618,7 +618,9 @@
 
 (let ((path #P"HOME:TEST.TEXT")
       (path #P"HOME:EXAMPLE.TEXT"))
- (defparameter *s* (open path :direction :output :if-exists :new-version
+ (defparameter *s* (open path :direction :output
+                         :if-exists :new-version
+                         :if-does-not-exist :create
                          :element-type 'base-char))
  (write-char   #\* *s*)
  (print (file-length *s*))
@@ -656,7 +658,8 @@
 
 
 (progn
-  (defparameter *s* (open "HOME:EXAMPLE.TEXT" :direction :input))
+  (defparameter *s* (open "HOME:EXAMPLE.TEXT" :direction :input
+                          :element-type 'base-char))
   (prog1 (read-line *s*)
     (close *s*)
     (vfs::dump (vfs::file-system-named "HOME"))))
@@ -676,3 +679,23 @@
 (setf (logical-pathname-translations "LISP") (list (list #P"LISP:**;*.*.*" #P"HOME:SRC;LISP;**;*.*.*")
                                                    (list #P"LISP:**;*.*"   #P"HOME:SRC;LISP;**;*.*")
                                                    (list #P"LISP:**;*"     #P"HOME:SRC;LISP;**;*")))
+
+
+(let ((path #P"LISP:TEST.LISP"))
+  (defparameter *s* (open path :direction :output
+                          :if-exists :new-version
+                          :if-does-not-exist :create))
+  (write-line ";;;; -*- mode:lisp -*-" *s*)
+  (write-string (prin1-to-string '(defun test (arg) 
+                                   (princ "Hello Test!") (terpri)
+                                   (princ arg) (terpri)
+                                   (princ "Done here." (terpri)
+                                    arg)))
+                *s*)
+  (terpri *s*)
+  (print (file-length *s*))
+  (close *s*)
+  (terpri)
+  (finish-output)
+  (vfs::dump (vfs::file-system-named "HOME")))
+(vfs::dump-pathname  #P"LISP:TEST.LISP")

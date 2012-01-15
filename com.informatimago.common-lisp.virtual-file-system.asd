@@ -4,7 +4,7 @@
     :name "Virtual File System"
     :description  "Implements a RAM-based Virtual File System."
     :author "<PJB> Pascal Bourguignon <pjb@informatimago.com>"
-    :version "0.0.1"
+    :version "0.0.4"
     :licence "GPL"
     :properties ((#:author-email                   . "pjb@informatimago.com")
                  (#:date                           . "Spring 2011")
@@ -17,6 +17,26 @@
                  :cl-ppcre
                  :com.informatimago.common-lisp.cesarum)
     :components ((:file "vfs-packages")
-                 (:file "virtual-fs"         :depends-on ("vfs-packages"))))
+                 (:file "utility"              :depends-on ("vfs-packages"))
+                 (:file "filenames"            :depends-on ("utility"))
+                 (:file "streams"              :depends-on ("utility"))
+
+                 (:file "virtual-fs"           :depends-on ("filenames"))
+                 (:file "files"                :depends-on ("streams" "filenames" "virtual-fs"))
+                 (:file "vfs-file-stream"      :depends-on ("streams" "filenames" "virtual-fs"))
+                 
+                 (:file "string-input"         :depends-on ("streams" "filenames"))
+                 (:file "string-output"        :depends-on ("streams" "filenames"))
+                 (:file "concatenated-stream"  :depends-on ("streams" "filenames"))
+                 (:file "broadcast-stream"     :depends-on ("streams" "filenames"))
+                 (:file "synonym-stream"       :depends-on ("streams" "filenames"))
+                 (:file "two-way-stream"       :depends-on ("streams" "filenames"))
+                 (:file "echo-stream"          :depends-on ("streams" "filenames"))
+                 (:file "standard-streams"     :depends-on ("string-input" "string-output" "two-way-stream"))
+                 (:file "cl-stream"            :depends-on ("standard-streams"))
+                 ;; ---
+                 (:file "initialize"           :depends-on ("cl-stream" "virtual-fs"))
+                 ))
+
 
 ;;;; THE END ;;;;
