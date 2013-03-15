@@ -110,7 +110,6 @@
   (check-type if-does-not-exist (member :error :create nil))
   (check-type external-format (member :default))
   
-  ;; (error "Not implemented yet")
 
   (let ((path (resolve-pathspec filespec)))
     (labels ((make-stream (file openp inputp outputp overridep position)

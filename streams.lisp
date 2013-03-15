@@ -268,12 +268,14 @@ DO:     Specifies the name and parameter list of methods.
                          (if (lambda-list-rest-p lambda-list)
                              `(apply (function ,cl-name) ,@arguments)
                              `(,cl-name ,@(butlast arguments)))))
-                 (defmethod ,m-name 
-                     ,(make-method-lambda-list lambda-list stream-name 'cl:stream)
-                   ,(let ((arguments (make-argument-list lambda-list)))
-                         (if (lambda-list-rest-p lambda-list)
-                             `(apply (function ,cl-name) ,@arguments)
-                             `(,cl-name ,@(butlast arguments)))))))
+                 ;; We don't want to allow access to CL:STREAM from a sandbox.
+                 ;; (defmethod ,m-name 
+                 ;;     ,(make-method-lambda-list lambda-list stream-name 'cl:stream)
+                 ;;   ,(let ((arguments (make-argument-list lambda-list)))
+                 ;;         (if (lambda-list-rest-p lambda-list)
+                 ;;             `(apply (function ,cl-name) ,@arguments)
+                 ;;             `(,cl-name ,@(butlast arguments)))))
+                 ))
        ,@(when check-stream-type
                `((defmethod ,m-name ,(make-method-lambda-list lambda-list stream-name 't)
                    (raise-type-error ,stream-name ',check-stream-type))))
@@ -445,8 +447,7 @@ DO:     Expands to a bunch of defmethod forms, with the parameter
 (define-forward file-length (stream)
   (declare (stream-argument stream)
            (check-stream-type file-stream) 
-           (cl-forward t))
-  (:method stream (error "not implemented yet")))
+           (cl-forward t)))
 
 
 (define-forward file-position (stream &optional (position-spec nil))

@@ -116,6 +116,7 @@ NOTICE: CHECK-TYPE signals a PROGRAM-ERROR.
 ;;; regular expressions
 ;;;
 
+
 (defun re-compile (re &key extended)
   #+clisp
   (regexp:regexp-compile   re :extended      extended)
@@ -124,16 +125,21 @@ NOTICE: CHECK-TYPE signals a PROGRAM-ERROR.
   #-(or clisp cl-ppcre)
   (error "Please implement RE-COMPILE"))
 
-(defun re-exec (re string)
+(defun re-exec (re string &key (start 0) (end nil))
   #+clisp
-  (regexp:regexp-exec re string)
+  (mapcar (lambda (match)
+            (list (regexp:match-start match)
+                  (regexp:match-end   match)
+                  match))
+          (multiple-value-list (regexp:regexp-exec re string :start start :end (or end (length string)))))
   #+(and (not clisp) cl-ppcre)
-  (multiple-value-bind (start end starts ends) (cl-ppcre:scan re string)
+  (multiple-value-bind (start end starts ends)
+      (cl-ppcre:scan re string :start start :end (or end (length string)))
     (and start end
-         (values-list  (cons (cons start end)
+         (values-list  (cons (list start end)
                              (map 'list (lambda (s e)
                                           (if (or s e)
-                                              (cons s e)
+                                              (list s e)
                                               nil))
                                   starts ends)))))
   #-(or clisp cl-ppcre)
@@ -141,14 +147,25 @@ NOTICE: CHECK-TYPE signals a PROGRAM-ERROR.
 
 (defun re-match-string (string match)
   #+clisp
-  (regexp:match-string string match)
+  (regexp:match-string string (third match))
   #+(and (not clisp) cl-ppcre)
-  (subseq string (car match) (cdr match))
+  (subseq string (first match) (second match))
   #-(or clisp cl-ppcre)
   (error "Please implement RE-MATCH-STRING"))
 
 (defun re-match (regexp string)
   (re-exec (re-compile regexp :extended t) string))
+
+
+(defun re-quote (re &key extended)
+  (assert extended (extended) "re-quote is not implemented yet for non-extended regexps.")
+  (cl:with-output-to-string (out)
+    (loop
+       :for ch :across re
+       :do (cond
+             ((alphanumericp ch) (princ ch out))
+             (t (princ "\\" out) (princ ch out))))))
+
 
 
 ;;;; THE END ;;;;

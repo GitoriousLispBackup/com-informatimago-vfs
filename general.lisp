@@ -1,3 +1,4 @@
+
 ;;;; -*- mode:lisp;coding:utf-8 -*-
 ;;;;**************************************************************************
 ;;;;FILE:               general.lisp
@@ -131,5 +132,6 @@
            (unwind-protect
                 (progn ,@body-rest (get-output-stream-string ,var))
              (close ,var))))))
+
 
 ;;;; THE END ;;;;

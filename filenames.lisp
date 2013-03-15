@@ -60,7 +60,9 @@
                 :extended t)))
 
 
-(defun parse-logical-pathname (string)
+(defun parse-logical-pathname (string &key (start 0) (end nil))
+  ;; TODO: implement junk-allowed
+  ;; TODO: return new position.
   (flet ((wild (item part wild-inferiors-p)
            (cond ((string= "*"  item) :wild)
                  ((and wild-inferiors-p (string= "**" item)) :wild-inferiors)
@@ -70,12 +72,12 @@
                          part item))
                  ((position #\* item) (list :wild-word item))
                  (t item))))
-    (multiple-value-bind (all
-                          dummy0 host 
-                          relative directories dummy1
-                          name
-                          dummy2 type dummy3 version) 
-        (re-exec *logical-pathname-regexp* string)
+    (destructuring-bind (all
+                         dummy0 host 
+                         relative directories dummy1
+                         name
+                         dummy2 type dummy3 version) 
+        (re-exec *logical-pathname-regexp* string :start start :end end)
       (if all
           (list (and host        (re-match-string string host))
                 (if relative :relative :absolute)
@@ -164,28 +166,7 @@
   (:documentation "A physical pathname."))
 
 (defmethod print-object ((self pathname) stream)
-  (flet ((present-item (item)
-           (cond ((null item) item)
-                 ((listp item) (second item))
-                 ((eq :wild item) "*")
-                 ((eq :wild-inferiors item) "**")
-                 (t item))))
-    #+(or)
-    (dolist (s '(*print-array* *print-base* *print-case*
-                 *print-circle* *print-escape* *print-gensym* *print-length*
-                 *print-level* *print-lines* *print-miser-width*
-                 *print-pprint-dispatch* *print-pretty* *print-radix*
-                 *print-readably* *print-right-margin*))  
-      (format t "~A = ~A~%" s (symbol-value s)))
-    (format stream "~:[~;#P\"~]~A:~:[~;;~]~{~A;~}~:[~;~:*~A~]~
-                    ~:[~;.~:*~A~:[~;.~:*~A~]~]~0@*~:[~;\"~]"
-            *print-escape*
-            (pathname-host self)
-            (eq :relative (first (pathname-directory self)))
-            (mapcar (function present-item) (rest (pathname-directory self)))
-            (present-item (pathname-name self))
-            (present-item (pathname-type self))
-            (present-item (pathname-version self))))
+  (format stream "~:[~;#P\"~]~A~0@*~:[~;\"~]" *print-escape* (namestring self))
   self)
 
 
@@ -272,6 +253,7 @@ file). Implementations can define other special version symbols.")
 
 
 
+(defun pathnamep (object) (typep object 'pathname))
 
 
 
@@ -302,6 +284,51 @@ file). Implementations can define other special version symbols.")
 
 
 
+(defun present-item (item)
+  (cond ((null item) item)
+        ((listp item) (second item))
+        ((eq :wild item) "*")
+        ((eq :wild-inferiors item) "**")
+        (t item)))
+
+
+(defun namestring (pathname)
+  (let ((pathname (pathname pathname)))
+   (format nil "~A:~:[~;;~]~{~A;~}~:[~;~:*~A~]~
+                    ~:[~;.~:*~A~:[~;.~:*~A~]~]"
+           (pathname-host pathname)
+           (eq :relative (first (pathname-directory pathname)))
+           (mapcar (function present-item) (rest (pathname-directory pathname)))
+           (present-item (pathname-name pathname))
+           (present-item (pathname-type pathname))
+           (present-item (pathname-version pathname)))))
+
+
+(defun file-namestring (pathname)
+  (let ((pathname (pathname pathname)))
+   (format nil "~:[~;~:*~A~]~:[~;.~:*~A~:[~;.~:*~A~]~]"
+           (present-item (pathname-name pathname))
+           (present-item (pathname-type pathname))
+           (present-item (pathname-version pathname)))))
+
+
+(defun directory-namestring (pathname)
+  (let ((pathname (pathname pathname)))
+   (format nil "~:[~;;~]~{~A;~}"
+           (eq :relative (first (pathname-directory pathname)))
+           (mapcar (function present-item) (rest (pathname-directory pathname))))))
+
+
+(defun host-namestring (pathname)
+  (let ((pathname (pathname pathname)))
+   (format nil "~@[~A~]" (pathname-host pathname))))
+
+
+(defun enough-namestring (pathname &optional defaults)
+  (error "enough-namestring not implemented yet"))
+
+
+
 
 
 (defun check-host (host)
@@ -310,6 +337,7 @@ file). Implementations can define other special version symbols.")
     ((eql :wild host)         host)
     ((file-system-named host) host)
     (t                        (error "Invalid host ~S" host))))
+
 
 (defun make-pathname (&key host device directory name type version (case :local)
                       (defaults nil defaults-p))
@@ -330,19 +358,27 @@ file). Implementations can define other special version symbols.")
         :version     (or version   (and defaults (pathname-version   defaults))))))
 
 
-(defun pathnamep (object) (typep object 'pathname))
 
 
 
 (defparameter *logical-pathname-translations* 
   (make-hash-table :test (function equal)))
 
+
 (defun logical-host-p (host)
+  "
+RETURN: whether HOST is a logical hosts.
+"
   (nth-value 1 (gethash host *logical-pathname-translations*)))
 
+
 (defun logical-pathname-translations (host)
+  "
+RETURN: The logical pathname translations for the HOST.
+"
   (assert-type host 'string)
   (gethash host *logical-pathname-translations*))
+
 
 (defun (setf logical-pathname-translations) (value host)
   (assert-type host 'string)
@@ -372,16 +408,52 @@ file). Implementations can define other special version symbols.")
 
 
 (defun logical-pathname (pathspec)
-  (warn "LOGICAL-PATHNAME is not implemented correctly.")
-  (pathname pathspec))
+  (let ((path (pathname pathspec)))
+    (if (logical-pathname-p path)
+        path
+        (error "~S: pathspec ~S is not a logical pathname."
+               'logical-pathname pathspec))))
 
 
 (defun parse-namestring (thing &optional host
                          (default-pathname *default-pathname-defaults*)
                          &key (start 0) (end nil) (junk-allowed nil))
-  (when (typep thing 'file-stream)
-    (setf thing (pathname thing)))
-  (error "parse-namestring not implemented yet"))
+  (let ((default-host (and host (check-host host))))
+    (etypecase thing
+      (file-stream
+       (parse-namestring  (pathname thing) default-host default-pathname
+                          :start start :end end :junk-allowed junk-allowed))
+      (pathname
+       (if (equal (pathname-host thing :case :common) default-host)
+           (values thing start)
+           (error 'simple-type-error
+                  :format-control "~S: pathname has a different host ~S than given host ~S"
+                  :format-arguments (list 'parse-namestring
+                                          (pathname-host thing :case :common)
+                                          default-host))))
+      (string
+       (if (string= thing "" :start start :end end)
+           (values (make-instance 'pathname :host nil :directory nil :name nil :type nil :version nil)
+                   start)
+           ;; TODO: implement junk-allowed
+           (let ((result (ignore-errors (parse-logical-pathname thing :start start :end end))))
+             (if result
+                 (destructuring-bind (host relative directory name type version) result
+                   (when (and host default-host)
+                     (unless (equal host default-hosts)
+                       (error 'simple-type-error
+                              :format-control "~S: pathname has a different host ~S than given host ~S"
+                              :format-arguments (list 'parse-namestring host default-host))))
+                   (let ((host (or host default-hosts (pathname-host default-pathname :case :common))))
+                     (values
+                      (make-instance (cond
+                                       ((eql :wild host)       'pathname)
+                                       ((logical-host-p host)  'logical-pathname)
+                                       (t                      'pathname))
+                          :host host :directory (cons relative directory)
+                          :name name :type type :version version)
+                      (or end (length thing)))))
+                 (values nil start))))))))
 
 
 (defun wild-pathname-p (pathname &optional field-key)
@@ -456,13 +528,67 @@ file). Implementations can define other special version symbols.")
                                            (rest (pathname-directory wild))))))))
 
 
+
 (defun translate-logical-pathname (pathname &key)
   (warn "translate-logical-pathname not implemented yet")
   (pathname pathname))
 
 
+(defun pathname-components (pathname)
+  (list (pathname-host      pathname)
+        (pathname-device    pathname)
+        (pathname-directory pathname)
+        (pathname-name      pathname)
+        (pathname-type      pathname)
+        (pathname-version   pathname)))
+
 (defun translate-pathname (source from-wildcard to-wildcard &key)
-  (error "translate-pathname not implemented yet"))
+  (assert-type source        '(or string pathname file-stream))
+  (assert-type from-wildcard '(or string pathname file-stream))
+  (assert-type to-wildcard   '(or string pathname file-stream))
+  (let ((source        (pathname-components (pathname source)))
+        (from-wildcard (pathname-components (pathname from-wildcard)))
+        (to-wildcard   (pathname-components (pathname to-wildcard))))
+    (loop
+       :for dirp    :in '(nil nil t nil nil nil)
+       :for s-compo :in source
+       :for f-compo :in from-wildcard
+       :for t-compo :in to-wildcard
+       :collect (if dirp
+                    
+                    
+                    ))))
+
+
+
+(defun join (sep strlist)
+  (if strlist
+      (cl:with-output-to-string (out)
+        (cl:princ (first strlist) out)
+        (dolist (str (rest strlist))
+          (cl:princ sep out)
+          (cl:princ str out)))
+      ""))
+
+(defun test ()
+  (let* ((source "CRACKBOOMHUH")
+         (source "FOOZIMBAR")
+         (from      (split-sequence #\* "FOO*BAR"))
+         (to        (split-sequence #\* "Z(O)OM*ZOOM"))
+         (from-re   (join "(.*)" (mapcar (lambda (item) (re-quote item :extended t)) from)))
+         (matches   (re-match from-re source)))
+    (assert (= (length  from) (length to)))
+    (if matches
+        (cl:with-output-to-string (out)
+          (pop matches)
+          (cl:princ (first to) out)
+          (dolist (item (rest to))
+            (let ((range (pop matches)))
+              (cl:princ (subseq source (first range) (second range)) out))
+            (cl:princ item out)))
+        source)))
+
+
 
 
 (defun delete-back (dir)

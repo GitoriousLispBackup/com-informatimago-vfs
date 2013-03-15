@@ -1,6 +1,6 @@
 ;;;; -*- mode:lisp; coding:utf-8 -*-
 
-(asdf:defsystem :com.informatimago.common-lisp.virtual-file-system
+(asdf:defsystem :com.informatimago.vfs
     :name "Virtual File System"
     :description  "Implements a RAM-based Virtual File System."
     :author "<PJB> Pascal Bourguignon <pjb@informatimago.com>"
@@ -8,7 +8,7 @@
     :licence "GPL"
     :properties ((#:author-email                   . "pjb@informatimago.com")
                  (#:date                           . "Spring 2011")
-                 ((#:albert #:output-dir)          . "../documentation/com.informatimago.common-lisp.virtual-file-system/")
+                 ((#:albert #:output-dir)          . "../documentation/com.informatimago.vfs/")
                  ((#:albert #:formats)             . ("docbook"))
                  ((#:albert #:docbook #:template)  . "book")
                  ((#:albert #:docbook #:bgcolor)   . "white")
@@ -34,6 +34,7 @@
                  (:file "echo-stream"          :depends-on ("streams" "filenames"))
                  (:file "standard-streams"     :depends-on ("string-input" "string-output" "two-way-stream"))
                  (:file "cl-stream"            :depends-on ("standard-streams"))
+                 (:file "general"              :depends-on ("streams" "filenames" "files"))
                  ;; ---
                  (:file "initialize"           :depends-on ("cl-stream" "virtual-fs"))
                  ))
