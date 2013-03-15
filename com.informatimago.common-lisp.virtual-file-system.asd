@@ -1,6 +1,6 @@
 ;;;; -*- mode:lisp; coding:utf-8 -*-
 
-(asdf:defsystem :com.informatimago.vfs
+(asdf:defsystem :com.informatimago.common-lisp.virtual-file-system
     :name "Virtual File System"
     :description  "Implements a RAM-based Virtual File System."
     :author "<PJB> Pascal Bourguignon <pjb@informatimago.com>"
@@ -16,8 +16,8 @@
     :depends-on (:split-sequence
                  :cl-ppcre
                  :com.informatimago.common-lisp.cesarum)
-    :components ((:file "vfs-packages")
-                 (:file "utility"              :depends-on ("vfs-packages"))
+    :components ((:file "packages")
+                 (:file "utility"              :depends-on ("packages"))
                  (:file "filenames"            :depends-on ("utility"))
                  (:file "streams"              :depends-on ("utility"))
 

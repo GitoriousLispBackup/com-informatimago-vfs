@@ -163,7 +163,7 @@
     ((nil)     direction)
     (otherwise stream)))
 
-(defun raise-type-error (object type)
+(defun signal-type-error (object type)
   (error (make-condition 'type-error :datum object :expected-type type)))
 
 
@@ -278,7 +278,7 @@ DO:     Specifies the name and parameter list of methods.
                  ))
        ,@(when check-stream-type
                `((defmethod ,m-name ,(make-method-lambda-list lambda-list stream-name 't)
-                   (raise-type-error ,stream-name ',check-stream-type))))
+                   (signal-type-error ,stream-name ',check-stream-type))))
        ,@(mapcar
           (lambda (method)
             (when (and (listp method) (eq :method (car method)))
