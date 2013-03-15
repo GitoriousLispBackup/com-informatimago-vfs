@@ -236,7 +236,7 @@ DO:     Specifies the name and parameter list of methods.
          (cl-forward        (caar  (gethash 'cl-forward        declarations)))
          (check-open-p      (caar  (gethash 'check-open-p      declarations)))
          (lambda-list       (parse-lambda-list arguments :ordinary))
-         (m-name            (intern (format nil "%~A" name)))
+         (m-name            (intern (format nil "%~A" (string name))))
          (cl-name           (intern (string name) "COMMON-LISP")))
     `(progn
        (eval-when (:compile-toplevel :load-toplevel :execute)
